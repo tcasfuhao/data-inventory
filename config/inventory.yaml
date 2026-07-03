@@ -1,0 +1,8 @@
+language: yonghe_qiang_03
+title: Yonghe Qiang Transcription Character Inventory
+data_root: ~/projects/my-projects/asr-models/yonghe-qiang/data/raw/YH-999
+report_dir: ../reports
+report_name: "{language}_data_inventory.md"
+transcription_globs:
+  - "*.txt"
+  - "*.eaf"
