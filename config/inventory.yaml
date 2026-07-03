@@ -1,4 +1,4 @@
-language: yonghe_qiang_03
+language: yonghe_qiang_04
 title: Yonghe Qiang Transcription Character Inventory
 data_root: ~/projects/my-projects/asr-models/yonghe-qiang/data/raw/YH-999
 report_dir: ../reports
@@ -6,3 +6,29 @@ report_name: "{language}_data_inventory.md"
 transcription_globs:
   - "*.txt"
   - "*.eaf"
+example_limit: 3
+context_chars: 24
+chao_number_regex: "(?<!\\d)[1-5]{2,3}(?!\\d)"
+chao_letters:
+  - "˥"
+  - "˦"
+  - "˧"
+  - "˨"
+  - "˩"
+  - "꜒"
+  - "꜓"
+  - "꜔"
+  - "꜕"
+  - "꜖"
+diacritic_markers:
+  - "◌̀"
+  - "◌́"
+  - "◌̂"
+  - "◌̃"
+  - "◌̄"
+  - "◌̆"
+  - "◌̈"
+  - "◌̊"
+  - "◌̌"
+  - "◌̩"
+  - "◌̯"
