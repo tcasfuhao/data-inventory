@@ -21,6 +21,10 @@ DEFAULT_CONFIG = Path("config/inventory.yaml")
 QUOTE_CHARS = set("\"'`´‘’‚‛“”„‟«»‹›")
 PUNCTUATION_TO_REPORT = set(",.;:!?¿¡#()[]{}<>/\\|-_+=*&^%$@~")
 TONE_NUMBER_RE = re.compile(r"(?<!\d)([1-5]{2})(?!\d)")
+DEFAULT_CHAO_LETTERS = ["˥", "˦", "˧", "˨", "˩", "꜒", "꜓", "꜔", "꜕", "꜖"]
+DEFAULT_DIACRITIC_MARKERS = ["◌̀", "◌́", "◌̂", "◌̃", "◌̄", "◌̆", "◌̈", "◌̊", "◌̌", "◌̩", "◌̯"]
+REDUPLICATED_CHAR_RE = re.compile(r"(.)\1+")
+REDUPLICATED_DIGIT_RE = re.compile(r"(\d)\1+")
 
 
 @dataclass(frozen=True)
@@ -89,6 +93,10 @@ def read_simple_yaml(path: Path) -> dict[str, Any]:
             current_list_key = key
 
     return config
+
+
+def normalize_diacritic_marker(marker: str) -> str:
+    return marker.replace("◌", "") if marker else ""
 
 
 def resolve_path(path_value: str | Path, base_dir: Path) -> Path:
@@ -181,6 +189,59 @@ def read_sources(files: list[Path]) -> list[SourceText]:
     return sources
 
 
+def add_example(
+    examples: dict[str, list[dict[str, Any]]],
+    key: str,
+    *,
+    source: SourceText,
+    text: str,
+    start: int,
+    end: int,
+    context_chars: int,
+    limit: int,
+) -> None:
+    bucket = examples.setdefault(key, [])
+    if len(bucket) >= limit:
+        return
+    left = max(0, start - context_chars)
+    right = min(len(text), end + context_chars)
+    bucket.append(
+        {
+            "file": source.path,
+            "source_type": source.source_type,
+            "match": text[start:end],
+            "context": text[left:right],
+            "span": (start, end),
+        }
+    )
+
+
+def markdown_escape_cell(value: str) -> str:
+    return value.replace("|", "\\|").replace("\n", " ")
+
+
+def compile_chao_letters_regex(chao_letters: list[str]) -> re.Pattern:
+    escaped = [re.escape(letter) for letter in chao_letters if letter]
+    if not escaped:
+        return re.compile(r"$a")
+    return re.compile("|".join(sorted(escaped, key=len, reverse=True)))
+
+
+def diacritic_hits(text: str, markers: list[str]) -> list[tuple[int, int, str]]:
+    normalized_markers = {normalize_diacritic_marker(marker) for marker in markers}
+    normalized_markers.discard("")
+    hits: list[tuple[int, int, str]] = []
+    for idx, char in enumerate(text):
+        if char in normalized_markers:
+            hits.append((idx, idx + 1, char))
+            continue
+        decomposed = unicodedata.normalize("NFD", char)
+        for mark in decomposed:
+            if mark in normalized_markers:
+                hits.append((idx, idx + 1, mark))
+    return hits
+
+
 def char_name(char: str) -> str:
     if char == " ":
         return "SPACE"
@@ -194,6 +255,8 @@ def char_display(char: str) -> str:
         return "`SPACE`"
     if char == "\t":
         return "`TAB`"
+    if len(char) == 1 and unicodedata.name(char, None) is None:
+        return f"`U+{ord(char):04X}`"
     if char == "`":
         return "`` ` ``"
     return f"`{char}`"
@@ -203,17 +266,31 @@ def is_punctuation(char: str) -> bool:
     return char in PUNCTUATION_TO_REPORT or unicodedata.category(char).startswith("P")
 
 
-def analyze_sources(sources: list[SourceText]) -> dict[str, Any]:
+def analyze_sources(
+    sources: list[SourceText],
+    *,
+    example_limit: int,
+    context_chars: int,
+    chao_number_regex: re.Pattern,
+    chao_letters_regex: re.Pattern,
+    diacritic_markers: list[str],
+) -> dict[str, Any]:
     char_counts: Counter[str] = Counter()
     uppercase_counts: Counter[str] = Counter()
     quote_counts: Counter[str] = Counter()
     punctuation_counts: Counter[str] = Counter()
     digit_counts: Counter[str] = Counter()
     tone_counts: Counter[str] = Counter()
+    chao_letter_counts: Counter[str] = Counter()
     combining_counts: Counter[str] = Counter()
+    configured_diacritic_counts: Counter[str] = Counter()
     ipa_modifier_counts: Counter[str] = Counter()
+    reduplicated_char_counts: Counter[str] = Counter()
+    reduplicated_digit_counts: Counter[str] = Counter()
     per_file_rows: list[dict[str, Any]] = []
     source_type_counts: Counter[str] = Counter()
+    char_examples: dict[str, list[dict[str, Any]]] = {}
+    marker_examples: dict[str, list[dict[str, Any]]] = {}
 
     total_annotations = 0
     total_nonempty_chars = 0
@@ -247,9 +324,87 @@ def analyze_sources(sources: list[SourceText]) -> dict[str, Any]:
                 if char in {"ʰ", "ʲ", "ʷ", "ː", "ˑ", "ˀ", "ˁ", "ˤ", "ʼ"}:
                     ipa_modifier_counts[char] += 1
 
-            for tone in TONE_NUMBER_RE.findall(text):
+            for idx, char in enumerate(text):
+                add_example(
+                    char_examples,
+                    char,
+                    source=source,
+                    text=text,
+                    start=idx,
+                    end=idx + 1,
+                    context_chars=context_chars,
+                    limit=example_limit,
+                )
+
+            for match in chao_number_regex.finditer(text):
+                tone = match.group(0)
                 tone_counts[tone] += 1
                 file_tone_counts[tone] += 1
+                add_example(
+                    marker_examples,
+                    f"chao_number:{tone}",
+                    source=source,
+                    text=text,
+                    start=match.start(),
+                    end=match.end(),
+                    context_chars=context_chars,
+                    limit=example_limit,
+                )
+
+            for match in chao_letters_regex.finditer(text):
+                value = match.group(0)
+                chao_letter_counts[value] += 1
+                add_example(
+                    marker_examples,
+                    f"chao_letter:{value}",
+                    source=source,
+                    text=text,
+                    start=match.start(),
+                    end=match.end(),
+                    context_chars=context_chars,
+                    limit=example_limit,
+                )
+
+            for start, end, mark in diacritic_hits(text, diacritic_markers):
+                configured_diacritic_counts[mark] += 1
+                add_example(
+                    marker_examples,
+                    f"diacritic:{mark}",
+                    source=source,
+                    text=text,
+                    start=start,
+                    end=end,
+                    context_chars=context_chars,
+                    limit=example_limit,
+                )
+
+            for match in REDUPLICATED_CHAR_RE.finditer(text):
+                value = match.group(0)
+                reduplicated_char_counts[value] += 1
+                add_example(
+                    marker_examples,
+                    f"reduplicated_char:{value}",
+                    source=source,
+                    text=text,
+                    start=match.start(),
+                    end=match.end(),
+                    context_chars=context_chars,
+                    limit=example_limit,
+                )
+
+            for match in REDUPLICATED_DIGIT_RE.finditer(text):
+                value = match.group(0)
+                reduplicated_digit_counts[value] += 1
+                add_example(
+                    marker_examples,
+                    f"reduplicated_digit:{value}",
+                    source=source,
+                    text=text,
+                    start=match.start(),
+                    end=match.end(),
+                    context_chars=context_chars,
+                    limit=example_limit,
+                )
 
         per_file_rows.append(
             {
@@ -270,10 +425,16 @@ def analyze_sources(sources: list[SourceText]) -> dict[str, Any]:
         "punctuation_counts": punctuation_counts,
         "digit_counts": digit_counts,
         "tone_counts": tone_counts,
+        "chao_letter_counts": chao_letter_counts,
         "combining_counts": combining_counts,
+        "configured_diacritic_counts": configured_diacritic_counts,
         "ipa_modifier_counts": ipa_modifier_counts,
+        "reduplicated_char_counts": reduplicated_char_counts,
+        "reduplicated_digit_counts": reduplicated_digit_counts,
         "per_file_rows": per_file_rows,
         "source_type_counts": source_type_counts,
+        "char_examples": char_examples,
+        "marker_examples": marker_examples,
         "total_annotations": total_annotations,
         "total_nonempty_chars": total_nonempty_chars,
     }
@@ -290,12 +451,65 @@ def table_for_counter(counter: Counter[str], *, limit: int | None = None) -> lis
     return rows
 
 
+def examples_for_key(
+    examples: dict[str, list[dict[str, Any]]],
+    key: str,
+    *,
+    display_base: Path,
+) -> str:
+    rows = []
+    for example in examples.get(key, []):
+        rows.append(
+            f"`{markdown_escape_cell(example['context'])}` "
+            f"({rel(example['file'], display_base)})"
+        )
+    return "<br>".join(rows) if rows else "-"
+
+
+def table_for_counter_with_examples(
+    counter: Counter[str],
+    examples: dict[str, list[dict[str, Any]]],
+    *,
+    display_base: Path,
+    key_prefix: str = "",
+    limit: int | None = None,
+) -> list[str]:
+    if not counter:
+        return ["No matches found."]
+
+    rows = ["| Value | Count | Examples |", "| --- | ---: | --- |"]
+    for value, count in counter.most_common(limit):
+        key = f"{key_prefix}{value}"
+        rows.append(
+            f"| {char_display(value) if len(value) == 1 else f'`{value}`'} | "
+            f"{count:,} | {examples_for_key(examples, key, display_base=display_base)} |"
+        )
+    return rows
+
+
 def tone_table(counter: Counter[str]) -> list[str]:
     if not counter:
         return ["No Chao-style tone number sequences found."]
     rows = ["| Tone number | Count |", "| --- | ---: |"]
     for tone, count in sorted(counter.items(), key=lambda item: (-item[1], item[0])):
         rows.append(f"| `{tone}` | {count:,} |")
+    return rows
+
+
+def tone_table_with_examples(
+    counter: Counter[str],
+    examples: dict[str, list[dict[str, Any]]],
+    *,
+    display_base: Path,
+) -> list[str]:
+    if not counter:
+        return ["No Chao-style tone number sequences found."]
+    rows = ["| Tone number | Count | Examples |", "| --- | ---: | --- |"]
+    for tone, count in sorted(counter.items(), key=lambda item: (-item[1], item[0])):
+        rows.append(
+            f"| `{tone}` | {count:,} | "
+            f"{examples_for_key(examples, f'chao_number:{tone}', display_base=display_base)} |"
+        )
     return rows
 
 
@@ -312,16 +526,34 @@ def build_report(config: dict[str, Any], config_path: Path) -> tuple[str, Path]:
     globs = config.get("transcription_globs", ["**/*.txt", "**/*.eaf"])
     if not isinstance(globs, list):
         raise ValueError("transcription_globs must be a YAML list")
+    example_limit = int(config.get("example_limit", 3))
+    context_chars = int(config.get("context_chars", 24))
+    chao_number_regex = re.compile(str(config.get("chao_number_regex", r"(?<!\d)[1-5]{2,3}(?!\d)")))
+    chao_letters = config.get("chao_letters", DEFAULT_CHAO_LETTERS)
+    if not isinstance(chao_letters, list):
+        raise ValueError("chao_letters must be a YAML list")
+    diacritic_markers = config.get("diacritic_markers", DEFAULT_DIACRITIC_MARKERS)
+    if not isinstance(diacritic_markers, list):
+        raise ValueError("diacritic_markers must be a YAML list")
 
     files = find_transcription_files(data_root, [str(item) for item in globs])
     sources = read_sources(files)
-    analysis = analyze_sources(sources)
+    analysis = analyze_sources(
+        sources,
+        example_limit=example_limit,
+        context_chars=context_chars,
+        chao_number_regex=chao_number_regex,
+        chao_letters_regex=compile_chao_letters_regex([str(item) for item in chao_letters]),
+        diacritic_markers=[str(item) for item in diacritic_markers],
+    )
     out_path = report_dir / report_name
     file_display_base = data_root.parent if data_root.is_file() else data_root
 
     source_type_counts: Counter[str] = analysis["source_type_counts"]
     per_file_rows: list[dict[str, Any]] = analysis["per_file_rows"]
     char_counts: Counter[str] = analysis["char_counts"]
+    char_examples: dict[str, list[dict[str, Any]]] = analysis["char_examples"]
+    marker_examples: dict[str, list[dict[str, Any]]] = analysis["marker_examples"]
 
     lines = [
         f"# Inventory of Characters for {language}",
@@ -336,6 +568,8 @@ def build_report(config: dict[str, Any], config_path: Path) -> tuple[str, Path]:
         f"- Config file: `{rel(config_path.resolve(), config_dir.parent)}`",
         f"- Data root: `{configured_data_root}`",
         f"- Report path: `{out_path}`",
+        f"- Example limit per item: {example_limit}",
+        f"- Example context characters per side: {context_chars}",
         "- Transcription globs:",
     ]
     for pattern in globs:
@@ -368,29 +602,111 @@ def build_report(config: dict[str, Any], config_path: Path) -> tuple[str, Path]:
             f"{tone_text} | {upper_text} | {quote_text} |"
         )
 
-    lines.extend(["", "## Tone Number Sequences", ""])
-    lines.extend(tone_table(analysis["tone_counts"]))
+    lines.extend(["", "## Chao Tone Number Sequences", ""])
+    lines.extend(tone_table_with_examples(analysis["tone_counts"], marker_examples, display_base=file_display_base))
+
+    lines.extend(["", "## Chao Tone Letters", ""])
+    lines.extend(
+        table_for_counter_with_examples(
+            analysis["chao_letter_counts"],
+            marker_examples,
+            display_base=file_display_base,
+            key_prefix="chao_letter:",
+        )
+    )
 
     lines.extend(["", "## Uppercase Letters", ""])
-    lines.extend(table_for_counter(analysis["uppercase_counts"]))
+    lines.extend(
+        table_for_counter_with_examples(
+            analysis["uppercase_counts"],
+            char_examples,
+            display_base=file_display_base,
+        )
+    )
 
     lines.extend(["", "## Quotation Marks And Apostrophes", ""])
-    lines.extend(table_for_counter(analysis["quote_counts"]))
+    lines.extend(
+        table_for_counter_with_examples(
+            analysis["quote_counts"],
+            char_examples,
+            display_base=file_display_base,
+        )
+    )
 
     lines.extend(["", "## Digits", ""])
-    lines.extend(table_for_counter(analysis["digit_counts"]))
+    lines.extend(
+        table_for_counter_with_examples(
+            analysis["digit_counts"],
+            char_examples,
+            display_base=file_display_base,
+        )
+    )
 
     lines.extend(["", "## Punctuation And Symbols", ""])
-    lines.extend(table_for_counter(analysis["punctuation_counts"]))
+    lines.extend(
+        table_for_counter_with_examples(
+            analysis["punctuation_counts"],
+            char_examples,
+            display_base=file_display_base,
+        )
+    )
 
     lines.extend(["", "## IPA Modifier Characters", ""])
-    lines.extend(table_for_counter(analysis["ipa_modifier_counts"]))
+    lines.extend(
+        table_for_counter_with_examples(
+            analysis["ipa_modifier_counts"],
+            char_examples,
+            display_base=file_display_base,
+        )
+    )
 
-    lines.extend(["", "## Combining Diacritics", ""])
-    lines.extend(table_for_counter(analysis["combining_counts"]))
+    lines.extend(["", "## Configured Diacritic Markers", ""])
+    lines.extend(
+        table_for_counter_with_examples(
+            analysis["configured_diacritic_counts"],
+            marker_examples,
+            display_base=file_display_base,
+            key_prefix="diacritic:",
+        )
+    )
+
+    lines.extend(["", "## Combining Diacritic Characters", ""])
+    lines.extend(
+        table_for_counter_with_examples(
+            analysis["combining_counts"],
+            char_examples,
+            display_base=file_display_base,
+        )
+    )
+
+    lines.extend(["", "## Reduplicated Character Runs", ""])
+    lines.extend(
+        table_for_counter_with_examples(
+            analysis["reduplicated_char_counts"],
+            marker_examples,
+            display_base=file_display_base,
+            key_prefix="reduplicated_char:",
+        )
+    )
+
+    lines.extend(["", "## Reduplicated Digit Runs", ""])
+    lines.extend(
+        table_for_counter_with_examples(
+            analysis["reduplicated_digit_counts"],
+            marker_examples,
+            display_base=file_display_base,
+            key_prefix="reduplicated_digit:",
+        )
+    )
 
     lines.extend(["", "## Complete Character Inventory", ""])
-    lines.extend(table_for_counter(char_counts))
+    lines.extend(
+        table_for_counter_with_examples(
+            char_counts,
+            char_examples,
+            display_base=file_display_base,
+        )
+    )
     lines.append("")
 
     return "\n".join(lines), out_path
