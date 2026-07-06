@@ -106,11 +106,31 @@ def resolve_path(path_value: str | Path, base_dir: Path) -> Path:
     return (base_dir / path).resolve()
 
 
+def configured_paths(value: Any, key: str) -> list[str | Path]:
+    if isinstance(value, (str, Path)):
+        return [value]
+    if isinstance(value, list) and all(isinstance(item, (str, Path)) for item in value):
+        return value
+    raise ValueError(f"{key} must be a path string or a YAML list of path strings")
+
+
 def rel(path: Path, base: Path) -> str:
     try:
         return path.relative_to(base).as_posix()
     except ValueError:
         return path.as_posix()
+
+
+def display_file_path(path: Path, data_roots: list[Path]) -> str:
+    for root in data_roots:
+        if root.is_file() and path == root:
+            return path.name
+        base = root.parent if root.is_file() else root
+        try:
+            return path.relative_to(base).as_posix()
+        except ValueError:
+            continue
+    return path.name
 
 
 def find_transcription_files(data_root: Path, globs: list[str]) -> list[Path]:
@@ -455,13 +475,13 @@ def examples_for_key(
     examples: dict[str, list[dict[str, Any]]],
     key: str,
     *,
-    display_base: Path,
+    data_roots: list[Path],
 ) -> str:
     rows = []
     for example in examples.get(key, []):
         rows.append(
             f"`{markdown_escape_cell(example['context'])}` "
-            f"({rel(example['file'], display_base)})"
+            f"({display_file_path(example['file'], data_roots)})"
         )
     return "<br>".join(rows) if rows else "-"
 
@@ -470,7 +490,7 @@ def table_for_counter_with_examples(
     counter: Counter[str],
     examples: dict[str, list[dict[str, Any]]],
     *,
-    display_base: Path,
+    data_roots: list[Path],
     key_prefix: str = "",
     limit: int | None = None,
 ) -> list[str]:
@@ -482,7 +502,7 @@ def table_for_counter_with_examples(
         key = f"{key_prefix}{value}"
         rows.append(
             f"| {char_display(value) if len(value) == 1 else f'`{value}`'} | "
-            f"{count:,} | {examples_for_key(examples, key, display_base=display_base)} |"
+            f"{count:,} | {examples_for_key(examples, key, data_roots=data_roots)} |"
         )
     return rows
 
@@ -500,7 +520,7 @@ def tone_table_with_examples(
     counter: Counter[str],
     examples: dict[str, list[dict[str, Any]]],
     *,
-    display_base: Path,
+    data_roots: list[Path],
 ) -> list[str]:
     if not counter:
         return ["No Chao-style tone number sequences found."]
@@ -508,7 +528,7 @@ def tone_table_with_examples(
     for tone, count in sorted(counter.items(), key=lambda item: (-item[1], item[0])):
         rows.append(
             f"| `{tone}` | {count:,} | "
-            f"{examples_for_key(examples, f'chao_number:{tone}', display_base=display_base)} |"
+            f"{examples_for_key(examples, f'chao_number:{tone}', data_roots=data_roots)} |"
         )
     return rows
 
@@ -517,8 +537,21 @@ def build_report(config: dict[str, Any], config_path: Path) -> tuple[str, Path]:
     config_dir = config_path.parent.resolve()
     language = str(config.get("language", "language"))
     title = str(config.get("title", f"{language} Data Inventory"))
-    configured_data_root = str(config.get("data_root", "data"))
-    data_root = resolve_path(configured_data_root, config_dir)
+    configured_data_roots = config.get("data_roots")
+    if configured_data_roots is None:
+        configured_data_roots = config.get("data_root", "data")
+        configured_data_root_key = "data_root"
+    else:
+        configured_data_root_key = "data_roots"
+    configured_data_roots = configured_paths(
+        configured_data_roots,
+        configured_data_root_key,
+    )
+    data_roots = [
+        resolve_path(path, config_dir)
+        for path in configured_data_roots
+    ]
+
     report_dir = resolve_path(config.get("report_dir", "reports"), config_dir)
     report_name = str(config.get("report_name", "{language}_data_inventory.md")).format(
         language=language
@@ -536,7 +569,11 @@ def build_report(config: dict[str, Any], config_path: Path) -> tuple[str, Path]:
     if not isinstance(diacritic_markers, list):
         raise ValueError("diacritic_markers must be a YAML list")
 
-    files = find_transcription_files(data_root, [str(item) for item in globs])
+    files = []
+    for root in data_roots:
+        files.extend(find_transcription_files(root, [str(item) for item in globs]))
+    # Remove duplicates and sort
+    files = sorted(set(files))
     sources = read_sources(files)
     analysis = analyze_sources(
         sources,
@@ -547,7 +584,6 @@ def build_report(config: dict[str, Any], config_path: Path) -> tuple[str, Path]:
         diacritic_markers=[str(item) for item in diacritic_markers],
     )
     out_path = report_dir / report_name
-    file_display_base = data_root.parent if data_root.is_file() else data_root
 
     source_type_counts: Counter[str] = analysis["source_type_counts"]
     per_file_rows: list[dict[str, Any]] = analysis["per_file_rows"]
@@ -566,7 +602,7 @@ def build_report(config: dict[str, Any], config_path: Path) -> tuple[str, Path]:
         "## Config",
         "",
         f"- Config file: `{rel(config_path.resolve(), config_dir.parent)}`",
-        f"- Data root: `{configured_data_root}`",
+        f"- Data roots: `{', '.join(str(root) for root in data_roots)}`",
         f"- Report path: `{out_path}`",
         f"- Example limit per item: {example_limit}",
         f"- Example context characters per side: {context_chars}",
@@ -597,20 +633,20 @@ def build_report(config: dict[str, Any], config_path: Path) -> tuple[str, Path]:
         upper_text = ", ".join(f"{key}:{value}" for key, value in sorted(row["uppercase"].items())) or "-"
         quote_text = ", ".join(f"{key}:{value}" for key, value in sorted(row["quotes"].items())) or "-"
         lines.append(
-            f"| `{rel(row['path'], file_display_base)}` | {row['source_type']} | "
+            f"| `{display_file_path(row['path'], data_roots)}` | {row['source_type']} | "
             f"{row['annotations']:,} | {row['unique_chars']:,} | "
             f"{tone_text} | {upper_text} | {quote_text} |"
         )
 
     lines.extend(["", "## Chao Tone Number Sequences", ""])
-    lines.extend(tone_table_with_examples(analysis["tone_counts"], marker_examples, display_base=file_display_base))
+    lines.extend(tone_table_with_examples(analysis["tone_counts"], marker_examples, data_roots=data_roots))
 
     lines.extend(["", "## Chao Tone Letters", ""])
     lines.extend(
         table_for_counter_with_examples(
             analysis["chao_letter_counts"],
             marker_examples,
-            display_base=file_display_base,
+            data_roots=data_roots,
             key_prefix="chao_letter:",
         )
     )
@@ -620,7 +656,7 @@ def build_report(config: dict[str, Any], config_path: Path) -> tuple[str, Path]:
         table_for_counter_with_examples(
             analysis["uppercase_counts"],
             char_examples,
-            display_base=file_display_base,
+            data_roots=data_roots,
         )
     )
 
@@ -629,7 +665,7 @@ def build_report(config: dict[str, Any], config_path: Path) -> tuple[str, Path]:
         table_for_counter_with_examples(
             analysis["quote_counts"],
             char_examples,
-            display_base=file_display_base,
+            data_roots=data_roots,
         )
     )
 
@@ -638,7 +674,7 @@ def build_report(config: dict[str, Any], config_path: Path) -> tuple[str, Path]:
         table_for_counter_with_examples(
             analysis["digit_counts"],
             char_examples,
-            display_base=file_display_base,
+            data_roots=data_roots,
         )
     )
 
@@ -647,7 +683,7 @@ def build_report(config: dict[str, Any], config_path: Path) -> tuple[str, Path]:
         table_for_counter_with_examples(
             analysis["punctuation_counts"],
             char_examples,
-            display_base=file_display_base,
+            data_roots=data_roots,
         )
     )
 
@@ -656,7 +692,7 @@ def build_report(config: dict[str, Any], config_path: Path) -> tuple[str, Path]:
         table_for_counter_with_examples(
             analysis["ipa_modifier_counts"],
             char_examples,
-            display_base=file_display_base,
+            data_roots=data_roots,
         )
     )
 
@@ -665,7 +701,7 @@ def build_report(config: dict[str, Any], config_path: Path) -> tuple[str, Path]:
         table_for_counter_with_examples(
             analysis["configured_diacritic_counts"],
             marker_examples,
-            display_base=file_display_base,
+            data_roots=data_roots,
             key_prefix="diacritic:",
         )
     )
@@ -675,7 +711,7 @@ def build_report(config: dict[str, Any], config_path: Path) -> tuple[str, Path]:
         table_for_counter_with_examples(
             analysis["combining_counts"],
             char_examples,
-            display_base=file_display_base,
+            data_roots=data_roots,
         )
     )
 
@@ -684,7 +720,7 @@ def build_report(config: dict[str, Any], config_path: Path) -> tuple[str, Path]:
         table_for_counter_with_examples(
             analysis["reduplicated_char_counts"],
             marker_examples,
-            display_base=file_display_base,
+            data_roots=data_roots,
             key_prefix="reduplicated_char:",
         )
     )
@@ -694,7 +730,7 @@ def build_report(config: dict[str, Any], config_path: Path) -> tuple[str, Path]:
         table_for_counter_with_examples(
             analysis["reduplicated_digit_counts"],
             marker_examples,
-            display_base=file_display_base,
+            data_roots=data_roots,
             key_prefix="reduplicated_digit:",
         )
     )
@@ -704,7 +740,7 @@ def build_report(config: dict[str, Any], config_path: Path) -> tuple[str, Path]:
         table_for_counter_with_examples(
             char_counts,
             char_examples,
-            display_base=file_display_base,
+            data_roots=data_roots,
         )
     )
     lines.append("")
