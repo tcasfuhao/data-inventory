@@ -1,14 +1,10 @@
 # Data Inventory Model
 
-This folder contains the standalone transcription inventory step for ASR model
-folders.
+This folder contains the standalone transcription inventory step for ASR model folders.
 
-It is intentionally separate from `../yonghe-qiang/`: the script reads that
-folder as an input dataset/model project, but writes reports here.
+Tthe script reads that folder as an input dataset/model project, but writes reports here.
 
 The inventory is based on raw transcription files such as `.txt` and `.eaf`.
-It does not inspect processed splits, CER-filtered data, model outputs, or
-generated manifests.
 
 ## Config
 
