@@ -1,4 +1,4 @@
-language: yonghe_qiang_06
+language: yonghe_qiang_09
 title: Yonghe Qiang Transcription Character Inventory
 data_roots:
   - ~/projects/my-projects/asr-models/yonghe-qiang/data/raw/YH-758
@@ -7,11 +7,11 @@ data_roots:
 report_dir: ../reports
 report_name: "{language}_data_inventory.md"
 transcription_globs:
-  - "*.txt"
+  # - "*.txt"
   - "*.eaf"
 example_limit: 3
 context_chars: 24
-chao_number_regex: "(?<!\\d)[1-5]{2,3}(?!\\d)"
+chao_number_regex: "(?<!\\d)[1-5]{2,}(?!\\d)"
 chao_letters:
   - "˥"
   - "˦"
