@@ -2,3 +2,4 @@ reports/*
 !reports/.gitkeep
 __pycache__/
 *.py[cod]
+test_build_inventory.py
