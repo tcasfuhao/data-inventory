@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import fnmatch
 import html
 import re
@@ -49,6 +50,8 @@ def parse_scalar(value: str) -> Any:
     value = value.strip()
     if not value:
         return ""
+    if value.startswith("[") and value.endswith("]"):
+        return parse_inline_list(value)
     if value in {"null", "None", "~"}:
         return None
     if value in {"true", "True"}:
@@ -60,6 +63,30 @@ def parse_scalar(value: str) -> Any:
     ):
         return value[1:-1]
     return value
+
+
+def parse_inline_list(value: str) -> list[Any]:
+    """Parse the small inline-list subset supported by the project config."""
+    inner = value[1:-1].strip()
+    if not inner:
+        return []
+
+    items: list[Any] = []
+    start = 0
+    quote: str | None = None
+    for index, char in enumerate(inner):
+        if char in {'"', "'"}:
+            if quote is None:
+                quote = char
+            elif quote == char:
+                quote = None
+        elif char == "," and quote is None:
+            items.append(parse_scalar(inner[start:index]))
+            start = index + 1
+    if quote is not None:
+        raise ValueError(f"Unterminated quote in inline list: {value}")
+    items.append(parse_scalar(inner[start:]))
+    return items
 
 
 def read_simple_yaml(path: Path) -> dict[str, Any]:
@@ -114,6 +141,33 @@ def configured_paths(value: Any, key: str) -> list[str | Path]:
     raise ValueError(f"{key} must be a path string or a YAML list of path strings")
 
 
+def configured_selector(value: Any, key: str) -> list[str]:
+    if isinstance(value, str):
+        selectors = [value.strip()]
+    elif isinstance(value, list) and all(isinstance(item, str) for item in value):
+        selectors = [item.strip() for item in value]
+    else:
+        raise ValueError(f"{key} must be a name, 'all', or a YAML list of names")
+
+    if not selectors or any(not item for item in selectors):
+        raise ValueError(f"{key} must not be empty")
+    if len(selectors) > 1 and any(item.casefold() == "all" for item in selectors):
+        raise ValueError(f"{key}: 'all' must be used by itself")
+
+    folded = [item.casefold() for item in selectors]
+    if len(folded) != len(set(folded)):
+        raise ValueError(f"{key} contains duplicate names")
+    return selectors
+
+
+def display_selector(selector: list[str] | None) -> str:
+    if selector is None:
+        return "<not configured>"
+    if len(selector) == 1:
+        return selector[0]
+    return "[" + ", ".join(selector) + "]"
+
+
 def rel(path: Path, base: Path) -> str:
     try:
         return path.relative_to(base).as_posix()
@@ -163,6 +217,78 @@ def read_txt_texts(path: Path) -> list[str]:
     return texts
 
 
+def select_name(
+    available_names: list[str],
+    requested_names: str | list[str],
+    *,
+    path: Path,
+    selector_kind: str,
+    allow_all: bool,
+) -> list[str]:
+    requested_names = configured_selector(requested_names, selector_kind)
+    if allow_all and requested_names[0].casefold() == "all":
+        return available_names
+
+    selected: set[str] = set()
+    for requested_name in requested_names:
+        matches = [
+            name for name in available_names
+            if name.casefold() == requested_name.casefold()
+        ]
+        if not matches:
+            available = ", ".join(repr(name) for name in available_names) or "<none>"
+            raise ValueError(
+                f"{path}: requested {selector_kind} {requested_name!r} was not found; "
+                f"available names: {available}"
+            )
+        if len(matches) > 1:
+            matches_text = ", ".join(repr(name) for name in matches)
+            raise ValueError(
+                f"{path}: requested {selector_kind} {requested_name!r} is ambiguous "
+                f"under case-insensitive matching: {matches_text}"
+            )
+        selected.add(matches[0])
+    return [name for name in available_names if name in selected]
+
+
+def read_csv_texts(path: Path, columns: str | list[str]) -> list[str]:
+    try:
+        handle = path.open(encoding="utf-8-sig", newline="")
+    except OSError as exc:
+        raise ValueError(f"{path}: could not open CSV file: {exc}") from exc
+
+    with handle:
+        try:
+            reader = csv.DictReader(handle)
+            fieldnames = reader.fieldnames or []
+            selected = select_name(
+                fieldnames,
+                columns,
+                path=path,
+                selector_kind="CSV column",
+                allow_all=True,
+            )
+            texts = []
+            for row_number, row in enumerate(reader, start=2):
+                if None in row:
+                    raise ValueError(
+                        f"{path}:{row_number}: CSV row has more values than headers"
+                    )
+                for selected_column in selected:
+                    value = row.get(selected_column)
+                    if value is None:
+                        raise ValueError(
+                            f"{path}:{row_number}: CSV row has no value for column "
+                            f"{selected_column!r}"
+                        )
+                    text = value.strip()
+                    if text:
+                        texts.append(text)
+            return texts
+        except csv.Error as exc:
+            raise ValueError(f"{path}: malformed CSV: {exc}") from exc
+
+
 def looks_like_time(value: str) -> bool:
     try:
         float(value)
@@ -171,20 +297,129 @@ def looks_like_time(value: str) -> bool:
     return True
 
 
-def read_eaf_texts(path: Path) -> list[str]:
+def read_eaf_texts(path: Path, tier_names: str | list[str]) -> list[str]:
     try:
         root = ET.parse(path).getroot()
-    except ET.ParseError:
-        return []
+    except (ET.ParseError, OSError) as exc:
+        raise ValueError(f"{path}: could not parse EAF XML: {exc}") from exc
 
+    tiers = [
+        element for element in root.iter()
+        if strip_namespace(element.tag) == "TIER"
+    ]
+    tier_ids = [tier.get("TIER_ID", "") for tier in tiers]
+    selected_ids = set(
+        select_name(
+            tier_ids,
+            tier_names,
+            path=path,
+            selector_kind="EAF tier",
+            allow_all=True,
+        )
+    )
     texts: list[str] = []
-    for element in root.iter():
-        if strip_namespace(element.tag) != "ANNOTATION_VALUE":
+    for tier in tiers:
+        if tier.get("TIER_ID", "") not in selected_ids:
             continue
-        text = "".join(element.itertext()).strip()
-        if text:
-            texts.append(html.unescape(text))
+        for element in tier.iter():
+            if strip_namespace(element.tag) != "ANNOTATION_VALUE":
+                continue
+            text = "".join(element.itertext()).strip()
+            if text:
+                texts.append(html.unescape(text))
     return texts
+
+
+def read_textgrid_content(path: Path) -> str:
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        raise ValueError(f"{path}: could not read TextGrid: {exc}") from exc
+
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        encoding = "utf-16"
+    elif raw.startswith(b"\xef\xbb\xbf"):
+        encoding = "utf-8-sig"
+    else:
+        encoding = "utf-8"
+    try:
+        return raw.decode(encoding)
+    except UnicodeDecodeError as exc:
+        raise ValueError(
+            f"{path}: TextGrid is not valid UTF-8 or BOM-marked UTF-16: {exc}"
+        ) from exc
+
+
+TEXTGRID_ITEM_RE = re.compile(r"^\s*item\s+\[\d+\]:\s*$")
+TEXTGRID_CLASS_RE = re.compile(r'^\s*class\s*=\s*"((?:""|[^"])*)"\s*$')
+TEXTGRID_NAME_RE = re.compile(r'^\s*name\s*=\s*"((?:""|[^"])*)"\s*$')
+TEXTGRID_VALUE_RE = re.compile(
+    r'^\s*(?:text|mark)\s*=\s*"((?:""|[^"])*)"\s*$'
+)
+
+
+def unescape_textgrid_string(value: str) -> str:
+    return value.replace('""', '"')
+
+
+def read_textgrid_texts(path: Path, tier_names: str | list[str]) -> list[str]:
+    content = read_textgrid_content(path)
+    lines = content.splitlines()
+    item_starts = [
+        index for index, line in enumerate(lines)
+        if TEXTGRID_ITEM_RE.match(line)
+    ]
+    if not item_starts:
+        raise ValueError(
+            f"{path}: unsupported or malformed TextGrid; expected Praat long "
+            "text-format tier blocks"
+        )
+
+    tiers: list[tuple[str, str, list[str]]] = []
+    for position, start in enumerate(item_starts):
+        end = item_starts[position + 1] if position + 1 < len(item_starts) else len(lines)
+        block = lines[start:end]
+        tier_class = ""
+        name = ""
+        values: list[str] = []
+        for line in block:
+            if not tier_class:
+                match = TEXTGRID_CLASS_RE.match(line)
+                if match:
+                    tier_class = unescape_textgrid_string(match.group(1))
+                    continue
+            if not name:
+                match = TEXTGRID_NAME_RE.match(line)
+                if match:
+                    name = unescape_textgrid_string(match.group(1))
+                    continue
+            match = TEXTGRID_VALUE_RE.match(line)
+            if match:
+                value = unescape_textgrid_string(match.group(1)).strip()
+                if value:
+                    values.append(value)
+        if tier_class not in {"IntervalTier", "TextTier"} or not name:
+            raise ValueError(
+                f"{path}: malformed TextGrid tier beginning at line {start + 1}"
+            )
+        tiers.append((name, tier_class, values))
+
+    available_names = [name for name, _, _ in tiers]
+    selected_names = set(
+        select_name(
+            available_names,
+            tier_names,
+            path=path,
+            selector_kind="TextGrid tier",
+            allow_all=True,
+        )
+    )
+    return [
+        value
+        for name, _, values in tiers
+        if name in selected_names
+        for value in values
+    ]
 
 
 def strip_namespace(tag: str) -> str:
@@ -193,18 +428,37 @@ def strip_namespace(tag: str) -> str:
     return tag
 
 
-def read_sources(files: list[Path]) -> list[SourceText]:
+def read_sources(
+    files: list[Path],
+    *,
+    csv_text_column: list[str] | None,
+    textgrid_tier: list[str],
+    eaf_tier: list[str],
+) -> list[SourceText]:
     sources: list[SourceText] = []
     for path in files:
         suffix = path.suffix.lower()
         if suffix == ".eaf":
-            texts = read_eaf_texts(path)
+            texts = read_eaf_texts(path, eaf_tier)
             source_type = "eaf"
         elif suffix == ".txt":
             texts = read_txt_texts(path)
             source_type = "txt"
+        elif suffix == ".csv":
+            if not csv_text_column:
+                raise ValueError(
+                    f"{path}: csv_text_column must be configured when scanning CSV files"
+                )
+            texts = read_csv_texts(path, csv_text_column)
+            source_type = "csv"
+        elif suffix == ".textgrid":
+            texts = read_textgrid_texts(path, textgrid_tier)
+            source_type = "textgrid"
         else:
-            continue
+            raise ValueError(
+                f"{path}: unsupported transcription file type {path.suffix!r}; "
+                "supported types are .txt, .csv, .eaf, and .TextGrid"
+            )
         sources.append(SourceText(path=path, source_type=source_type, texts=texts))
     return sources
 
@@ -275,6 +529,8 @@ def char_display(char: str) -> str:
         return "`SPACE`"
     if char == "\t":
         return "`TAB`"
+    if len(char) == 1 and unicodedata.category(char).startswith("M"):
+        return f"`◌{char}`"
     if len(char) == 1 and unicodedata.name(char, None) is None:
         return f"`U+{ord(char):04X}`"
     if char == "`":
@@ -464,7 +720,7 @@ def table_for_counter(counter: Counter[str], *, limit: int | None = None) -> lis
     if not counter:
         return ["No matches found."]
 
-    rows = ["| Character | Count | Unicode name |", "| --- | ---: | --- |"]
+    rows = ["| Character | Count | Unicode name |"]
     items = counter.most_common(limit)
     for char, count in items:
         rows.append(f"| {char_display(char)} | {count:,} | {char_name(char)} |")
@@ -497,7 +753,7 @@ def table_for_counter_with_examples(
     if not counter:
         return ["No matches found."]
 
-    rows = ["| Value | Count | Examples |", "| --- | ---: | --- |"]
+    rows = ["| Value | Count | Examples |"]
     for value, count in counter.most_common(limit):
         key = f"{key_prefix}{value}"
         rows.append(
@@ -510,7 +766,7 @@ def table_for_counter_with_examples(
 def tone_table(counter: Counter[str]) -> list[str]:
     if not counter:
         return ["No Chao-style tone number sequences found."]
-    rows = ["| Tone number | Count |", "| --- | ---: |"]
+    rows = ["| Tone number | Count |"]
     for tone, count in sorted(counter.items(), key=lambda item: (-item[1], item[0])):
         rows.append(f"| `{tone}` | {count:,} |")
     return rows
@@ -524,7 +780,7 @@ def tone_table_with_examples(
 ) -> list[str]:
     if not counter:
         return ["No Chao-style tone number sequences found."]
-    rows = ["| Tone number | Count | Examples |", "| --- | ---: | --- |"]
+    rows = ["| Tone number | Count | Examples |"]
     for tone, count in sorted(counter.items(), key=lambda item: (-item[1], item[0])):
         rows.append(
             f"| `{tone}` | {count:,} | "
@@ -559,6 +815,15 @@ def build_report(config: dict[str, Any], config_path: Path) -> tuple[str, Path]:
     globs = config.get("transcription_globs", ["**/*.txt", "**/*.eaf"])
     if not isinstance(globs, list):
         raise ValueError("transcription_globs must be a YAML list")
+    csv_text_column_value = config.get("csv_text_column")
+    csv_text_column = (
+        configured_selector(csv_text_column_value, "csv_text_column")
+        if csv_text_column_value is not None else None
+    )
+    textgrid_tier = configured_selector(
+        config.get("textgrid_tier", "all"), "textgrid_tier"
+    )
+    eaf_tier = configured_selector(config.get("eaf_tier", "all"), "eaf_tier")
     example_limit = int(config.get("example_limit", 3))
     context_chars = int(config.get("context_chars", 24))
     chao_number_regex = re.compile(str(config.get("chao_number_regex", r"(?<!\d)[1-5]{2,3}(?!\d)")))
@@ -574,7 +839,12 @@ def build_report(config: dict[str, Any], config_path: Path) -> tuple[str, Path]:
         files.extend(find_transcription_files(root, [str(item) for item in globs]))
     # Remove duplicates and sort
     files = sorted(set(files))
-    sources = read_sources(files)
+    sources = read_sources(
+        files,
+        csv_text_column=csv_text_column,
+        textgrid_tier=textgrid_tier,
+        eaf_tier=eaf_tier,
+    )
     analysis = analyze_sources(
         sources,
         example_limit=example_limit,
@@ -597,7 +867,6 @@ def build_report(config: dict[str, Any], config_path: Path) -> tuple[str, Path]:
         f"Date: {date.today().isoformat()}",
         "",
         "This report inventories characters used in transcription source files.",
-        "It does not inspect processed splits, CER-filtered data, model outputs, or generated manifests.",
         "",
         "## Config",
         "",
@@ -606,6 +875,9 @@ def build_report(config: dict[str, Any], config_path: Path) -> tuple[str, Path]:
         f"- Report path: `{out_path}`",
         f"- Example limit per item: {example_limit}",
         f"- Example context characters per side: {context_chars}",
+        f"- CSV text column: `{display_selector(csv_text_column)}`",
+        f"- TextGrid tier: `{display_selector(textgrid_tier)}`",
+        f"- EAF tier: `{display_selector(eaf_tier)}`",
         "- Transcription globs:",
     ]
     for pattern in globs:
@@ -618,7 +890,9 @@ def build_report(config: dict[str, Any], config_path: Path) -> tuple[str, Path]:
             "",
             f"- Files scanned: {len(sources):,}",
             f"- `.txt` files: {source_type_counts.get('txt', 0):,}",
+            f"- `.csv` files: {source_type_counts.get('csv', 0):,}",
             f"- `.eaf` files: {source_type_counts.get('eaf', 0):,}",
+            f"- `.TextGrid` files: {source_type_counts.get('textgrid', 0):,}",
             f"- Non-empty transcription entries: {analysis['total_annotations']:,}",
             f"- Transcription characters counted: {analysis['total_nonempty_chars']:,}",
             f"- Unique characters: {len(char_counts):,}",
