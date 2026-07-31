@@ -1,17 +1,21 @@
-language: yonghe_qiang_09
-title: Yonghe Qiang Transcription Character Inventory
+language: yonghe_rma_06
+title: Yonghe Rma Transcription Character Inventory
 data_roots:
-  - ~/projects/my-projects/asr-models/yonghe-qiang/data/raw/YH-758
-  - ~/projects/my-projects/asr-models/yonghe-qiang/data/raw/YH-868
-  - ~/projects/my-projects/asr-models/yonghe-qiang/data/raw/YH-999
-report_dir: ../reports
+#  - ~/projects/my-projects/asr-models/yonghe-rma/dataset-for-yonghe-rma-lexemes
+  - ~/projects/my-projects/asr-models/yonghe-rma/disyllabic-forms-in-yonghe-rma
+report_dir: ../reports/yonghe_rma
 report_name: "{language}_data_inventory.md"
 transcription_globs:
-  # - "*.txt"
-  - "*.eaf"
+#   - "*.txt"
+#   - "*.eaf"
+   - "*.TextGrid"
+#   - "*.csv"
+csv_text_column: form
+textgrid_tier: segments
+eaf_tier: all
 example_limit: 3
 context_chars: 24
-chao_number_regex: "(?<!\\d)[1-5]{2,}(?!\\d)"
+chao_number_regex: "[1-5]{2,}"
 chao_letters:
   - "˥"
   - "˦"
