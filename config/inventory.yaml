@@ -1,15 +1,14 @@
-language: yonghe_rma_10
-title: Yonghe Rma Transcription Character Inventory
+language: yonghe_qiang_09
+title: Yonghe Qiang Transcription Character Inventory
 data_roots:
-  - ~/projects/my-projects/asr-models/yonghe-rma/dataset-for-yonghe-rma-lexemes
-#  - ~/projects/my-projects/asr-models/yonghe-rma/disyllabic-forms-in-yonghe-rma
-report_dir: ../reports/yonghe_rma
+  - ~/projects/my-projects/asr-models/yonghe-qiang_01
+report_dir: ../reports/yonghe_qiang
 report_name: "{language}_data_inventory.md"
 transcription_globs:
 #   - "*.txt"
-#   - "*.eaf"
+   - "*.eaf"
 #   - "*.TextGrid"
-   - "*.csv"
+#   - "*.csv"
 csv_text_column: form
 textgrid_tier: segments
 eaf_tier: all
