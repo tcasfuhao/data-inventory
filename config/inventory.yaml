@@ -1,7 +1,7 @@
-language: yonghe_qiang_09
+language: yonghe_qiang_12
 title: Yonghe Qiang Transcription Character Inventory
 data_roots:
-  - ~/projects/my-projects/asr-models/yonghe-qiang_01
+  - ~/projects/my-projects/asr-models/language-downloads/yonghe-qiang_01/
 report_dir: ../reports/yonghe_qiang
 report_name: "{language}_data_inventory.md"
 transcription_globs:
