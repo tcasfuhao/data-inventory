@@ -7,6 +7,15 @@ Tthe script reads that folder as an input dataset/model project, but writes repo
 The inventory is based on raw transcription files such as `.txt`, `.csv`, `.eaf`,
 and Praat long text-format `.TextGrid` files.
 
+## Conda environment
+
+Technically, no environment is required to run this project, however, later stages use a shared `tcas_asr_python3.10` Conda environment, so for standardisation principles, we recomment the environment being made with Python 3.10 and activate:
+
+```bash
+conda create --name tcas_asr_python3.10 python=3.10
+conda activate tcas_asr_python3.10
+```
+
 ## Config
 
 Edit `config/inventory.yaml` to choose:
