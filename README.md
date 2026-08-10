@@ -14,6 +14,7 @@ Technically, no environment is required to run this project, however, later stag
 ```bash
 conda create --name tcas_asr_python3.10 python=3.10
 conda activate tcas_asr_python3.10
+python -m pip install -r requirements.txt
 ```
 
 ## Config
