@@ -1,8 +1,8 @@
-language: yonghe_qiang_12
-title: Yonghe Qiang Transcription Character Inventory
+language: yongning-na
+#title: Yongning-na Transcription Character Inventory
 data_roots:
-  - ~/projects/my-projects/asr-models/language-downloads/yonghe-qiang_01/
-report_dir: ../reports/yonghe_qiang
+  - ~/projects/my-projects/asr-models/language-downloads/yongning-na_01/doreco_yong1270_core_v2.0/
+report_dir: ../reports/yongning-na
 report_name: "{language}_data_inventory.md"
 transcription_globs:
 #   - "*.txt"
@@ -11,10 +11,10 @@ transcription_globs:
 #   - "*.csv"
 csv_text_column: form
 textgrid_tier: segments
-eaf_tier: all
+eaf_tier: W-0
 example_limit: 3
 context_chars: 24
-chao_number_regex: "[1-5]{2,}"
+chao_number_regex: "[1-5]{1,}"
 chao_letters:
   - "˥"
   - "˦"
