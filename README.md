@@ -2,14 +2,13 @@
 
 This folder contains the standalone transcription inventory step for ASR model folders.
 
-Tthe script reads that folder as an input dataset/model project, but writes reports here.
+The script reads the folder as an input dataset/model project, but writes reports here.
 
-The inventory is based on raw transcription files such as `.txt`, `.csv`, `.eaf`,
-and Praat long text-format `.TextGrid` files.
+The inventory is based on raw transcription files such as `.txt`, `.csv`, `.eaf`, and Praat long text-format `.TextGrid` files.
 
 ## Conda environment
 
-Technically, no environment is required to run this project, however, later stages use a shared `tcas_asr_python3.10` Conda environment, so for standardisation principles, we recomment the environment being made with Python 3.10 and activate:
+Technically, no environment is required to run this project, however, later stages use a shared `tcas_asr_python3.10` Conda environment, so for standardisation principles, we recomment the environment being made with Python 3.10 and activated:
 
 ```bash
 conda create --name tcas_asr_python3.10 python=3.10
@@ -54,8 +53,6 @@ The transcription globs choose which files to scan. Each matched file's extensio
 If a selected column or tier is missing, the script stops and reports both the requested name and the names available in that file.
 
 ## Run
-
-From `asr-models/data-inventory/`:
 
 ```bash
 python scripts/build_inventory.py --config config/inventory.yaml
