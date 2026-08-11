@@ -63,6 +63,18 @@ chao_letters: ["˥", "˦", "˧", "˨", "˩"]
 
 The inventory treats every maximal adjacent run of these characters as one observed contour. This includes single levels, transitions such as `˥˦`, repeated levels such as `˥˥`, and contours of any length such as `˧˩˦`. Only contours present in the scanned transcription data appear in the report.
 
+### IPA modifier attachments
+
+Alongside the overall counts for IPA modifiers such as `ʰ`, `ʷ`, and `ː`, the report groups each occurrence by its inferred modified grapheme and local sequence. Combining marks remain attached to their base, stacked modifiers in forms such as `kʰʷ` refer back to `k`, and common tie-bar affricates such as `t͡sʰ` are kept together. Modifiers at the beginning of text or after whitespace or punctuation are reported as `(unattached)`.
+
+This is a Unicode- and context-based inventory aid, not a complete phonological parser.
+
+### Diacritic attachments
+
+The report provides two separate breakdowns of what diacritics modify. **Configured Diacritic Attachments** covers the marks in `diacritic_markers` and recognizes both decomposed forms such as `á` and precomposed forms such as `á`; the latter is shown with modified base `a` and exact source sequence `á`. **Combining Diacritic Attachments** covers every nonspacing combining-mark code point physically present in the source, without synthesizing marks from precomposed characters.
+
+Stacked marks refer to their shared base. Common IPA tie bars retain the complete tied unit, so the tie bar in `d͡ʒ` is reported against `d͡ʒ`, and a mark in `d͡ʒ̥` is likewise reported as modifying `d͡ʒ`. Marks without a usable base are labelled `(unattached)`. Both breakdowns preserve the existing overall count tables and use Unicode context inference rather than full phonological parsing.
+
 ## Run
 
 ```bash
