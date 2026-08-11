@@ -16,8 +16,8 @@ example_limit: 3
 context_chars: 24
 
 
-# Chao numbers may contain any number of levels. Chao letter contours are
-# discovered as maximal runs made from the five primitive letters below.
+# Chao numbers may contain any number of levels. Chao letter contours are discovered as maximal runs made from the five primitive letters below. Additionally, these are the following is only to override what is already present in the inventory (line 25)
+# Defaults are: chao_number_regex: "[1-5]{2}"; chao_letters: ["˥", "˦", "˧", "˨", "˩"]; diacritic_markers: ["◌̀", "◌́", "◌̂", "◌̃", "◌̄", "◌̆", "◌̈", "◌̊", "◌̌", "◌̩", "◌̯"]
 chao_number_regex: "[1-5]{1,}"
 chao_letters:
   - "˥"
