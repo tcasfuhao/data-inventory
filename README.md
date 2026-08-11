@@ -27,6 +27,7 @@ Edit `config/inventory.yaml` to choose:
 - `csv_text_column`: one or more CSV columns containing transcriptions, or `all` (not the default)
 - `textgrid_tier`: one or more TextGrid tier names, or `all` (the default)
 - `eaf_tier`: one or more EAF `TIER_ID` values, or `all` (the default)
+- `chao_letters`: the unique, single-character primitives used to discover Chao tone contours
 
 Column and tier names are matched case-insensitively. For example:
 
@@ -51,6 +52,16 @@ For CSV files, `all` reads every non-empty data cell as a separate transcription
 The transcription globs choose which files to scan. Each matched file's extension then selects the appropriate CSV, TextGrid, EAF, or plain-text reader, so mixed file formats can be scanned in one run while retaining their format-specific selectors.
 
 If a selected column or tier is missing, the script stops and reports both the requested name and the names available in that file.
+
+### Chao tone contours
+
+Configure the five primitive Chao tone letters rather than enumerating contours:
+
+```yaml
+chao_letters: ["˥", "˦", "˧", "˨", "˩"]
+```
+
+The inventory treats every maximal adjacent run of these characters as one observed contour. This includes single levels, transitions such as `˥˦`, repeated levels such as `˥˥`, and contours of any length such as `˧˩˦`. Only contours present in the scanned transcription data appear in the report.
 
 ## Run
 
