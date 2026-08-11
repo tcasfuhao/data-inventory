@@ -16,6 +16,8 @@ from pathlib import Path
 from typing import Any
 from datetime import date
 
+import regex as unicode_regex
+
 
 DEFAULT_CONFIG = Path("config/inventory.yaml")
 
@@ -24,6 +26,9 @@ PUNCTUATION_TO_REPORT = set(",.;:!?¿¡#()[]{}<>/\\|-_+=*&^%$@~")
 TONE_NUMBER_RE = re.compile(r"(?<!\d)([1-5]{2})(?!\d)")
 DEFAULT_CHAO_LETTERS = ["˥", "˦", "˧", "˨", "˩"]
 DEFAULT_DIACRITIC_MARKERS = ["◌̀", "◌́", "◌̂", "◌̃", "◌̄", "◌̆", "◌̈", "◌̊", "◌̌", "◌̩", "◌̯"]
+IPA_MODIFIER_CHARS = frozenset({"ʰ", "ʲ", "ʷ", "ː", "ˑ", "ˀ", "ˁ", "ˤ", "ʼ"})
+IPA_TIE_BARS = frozenset({"͡", "͜"})
+UNATTACHED_MODIFIER = "(unattached)"
 REDUPLICATED_CHAR_RE = re.compile(r"(.)\1+")
 REDUPLICATED_DIGIT_RE = re.compile(r"(\d)\1+")
 
@@ -464,8 +469,8 @@ def read_sources(
 
 
 def add_example(
-    examples: dict[str, list[dict[str, Any]]],
-    key: str,
+    examples: dict[Any, list[dict[str, Any]]],
+    key: Any,
     *,
     source: SourceText,
     text: str,
@@ -545,6 +550,146 @@ def is_punctuation(char: str) -> bool:
     return char in PUNCTUATION_TO_REPORT or unicodedata.category(char).startswith("P")
 
 
+def _is_modifier_cluster(value: str) -> bool:
+    return bool(value) and value[0] in IPA_MODIFIER_CHARS and all(
+        char in IPA_MODIFIER_CHARS or unicodedata.category(char).startswith("M")
+        for char in value
+    )
+
+
+def _is_attachment_boundary(value: str) -> bool:
+    return not value or value.isspace() or all(is_punctuation(char) for char in value)
+
+
+def ipa_modifier_attachments(text: str) -> list[tuple[str, str, str, int, int]]:
+    """Infer modifier attachments from Unicode graphemes and local IPA context."""
+    clusters = [
+        (match.group(0), match.start(), match.end())
+        for match in unicode_regex.finditer(r"\X", text)
+    ]
+    cluster_at: list[int] = [0] * len(text)
+    for cluster_index, (_, start, end) in enumerate(clusters):
+        for position in range(start, end):
+            cluster_at[position] = cluster_index
+
+    attachments: list[tuple[str, str, str, int, int]] = []
+    for modifier_position, modifier in enumerate(text):
+        if modifier not in IPA_MODIFIER_CHARS:
+            continue
+        current_index = cluster_at[modifier_position]
+        _, modifier_start, modifier_end = clusters[current_index]
+        base_index = current_index - 1
+        unattached_start = modifier_start
+        while base_index >= 0 and _is_modifier_cluster(clusters[base_index][0]):
+            unattached_start = clusters[base_index][1]
+            base_index -= 1
+        if base_index < 0 or _is_attachment_boundary(clusters[base_index][0]):
+            attachments.append(
+                (
+                    modifier,
+                    UNATTACHED_MODIFIER,
+                    text[unattached_start:modifier_end],
+                    unattached_start,
+                    modifier_end,
+                )
+            )
+            continue
+
+        base, base_start, _ = clusters[base_index]
+        if (
+            base_index > 0
+            and any(tie_bar in clusters[base_index - 1][0] for tie_bar in IPA_TIE_BARS)
+            and not _is_attachment_boundary(clusters[base_index - 1][0])
+        ):
+            tied_part, tied_start, _ = clusters[base_index - 1]
+            base = tied_part + base
+            base_start = tied_start
+        attachments.append(
+            (modifier, base, text[base_start:modifier_end], base_start, modifier_end)
+        )
+    return attachments
+
+
+def _diacritic_base(sequence: str) -> str:
+    """Return the written base while retaining structural IPA tie bars."""
+    decomposed = unicodedata.normalize("NFD", sequence)
+    base = "".join(
+        char
+        for char in decomposed
+        if char in IPA_TIE_BARS or not unicodedata.category(char).startswith("M")
+    )
+    return unicodedata.normalize("NFC", base)
+
+
+def diacritic_attachments(
+    text: str,
+    hits: list[tuple[int, int, str]],
+) -> list[tuple[str, str, str, int, int]]:
+    """Infer bases and source graphemes for configured or literal diacritic hits."""
+    if not hits:
+        return []
+
+    clusters = [
+        (match.group(0), match.start(), match.end())
+        for match in unicode_regex.finditer(r"\X", text)
+    ]
+    cluster_at: list[int] = [0] * len(text)
+    for cluster_index, (_, start, end) in enumerate(clusters):
+        for position in range(start, end):
+            cluster_at[position] = cluster_index
+
+    attachments: list[tuple[str, str, str, int, int]] = []
+    for hit_start, _, mark in hits:
+        current_index = cluster_at[hit_start]
+        current, sequence_start, sequence_end = clusters[current_index]
+        previous_has_tie = (
+            current_index > 0
+            and any(tie_bar in clusters[current_index - 1][0] for tie_bar in IPA_TIE_BARS)
+        )
+        current_has_tie = any(tie_bar in current for tie_bar in IPA_TIE_BARS)
+
+        if previous_has_tie and not _is_attachment_boundary(
+            clusters[current_index - 1][0]
+        ):
+            sequence_start = clusters[current_index - 1][1]
+        if (
+            current_has_tie
+            and current_index + 1 < len(clusters)
+            and not _is_attachment_boundary(clusters[current_index + 1][0])
+        ):
+            sequence_end = clusters[current_index + 1][2]
+
+        sequence = text[sequence_start:sequence_end]
+        if mark in IPA_TIE_BARS:
+            has_left_base = any(
+                not unicodedata.category(char).startswith("M")
+                for char in text[clusters[current_index][1]:hit_start]
+            )
+            has_right_base = (
+                current_index + 1 < len(clusters)
+                and not _is_attachment_boundary(clusters[current_index + 1][0])
+            )
+            base = (
+                _diacritic_base(sequence)
+                if has_left_base and has_right_base
+                else UNATTACHED_MODIFIER
+            )
+        else:
+            base = _diacritic_base(sequence)
+            if _is_attachment_boundary(base):
+                base = UNATTACHED_MODIFIER
+
+        if base == UNATTACHED_MODIFIER:
+            sequence = "".join(
+                char
+                for char in current
+                if unicodedata.category(char).startswith("M")
+            ) or mark
+
+        attachments.append((mark, base, sequence, sequence_start, sequence_end))
+    return attachments
+
+
 def analyze_sources(
     sources: list[SourceText],
     *,
@@ -563,13 +708,25 @@ def analyze_sources(
     chao_letter_counts: Counter[str] = Counter()
     combining_counts: Counter[str] = Counter()
     configured_diacritic_counts: Counter[str] = Counter()
+    combining_diacritic_attachment_counts: Counter[tuple[str, str, str]] = Counter()
+    configured_diacritic_attachment_counts: Counter[tuple[str, str, str]] = Counter()
     ipa_modifier_counts: Counter[str] = Counter()
+    ipa_modifier_attachment_counts: Counter[tuple[str, str, str]] = Counter()
     reduplicated_char_counts: Counter[str] = Counter()
     reduplicated_digit_counts: Counter[str] = Counter()
     per_file_rows: list[dict[str, Any]] = []
     source_type_counts: Counter[str] = Counter()
     char_examples: dict[str, list[dict[str, Any]]] = {}
     marker_examples: dict[str, list[dict[str, Any]]] = {}
+    modifier_attachment_examples: dict[
+        tuple[str, str, str], list[dict[str, Any]]
+    ] = {}
+    combining_diacritic_attachment_examples: dict[
+        tuple[str, str, str], list[dict[str, Any]]
+    ] = {}
+    configured_diacritic_attachment_examples: dict[
+        tuple[str, str, str], list[dict[str, Any]]
+    ] = {}
 
     total_annotations = 0
     total_nonempty_chars = 0
@@ -600,7 +757,7 @@ def analyze_sources(
                     punctuation_counts[char] += 1
                 if unicodedata.category(char) == "Mn":
                     combining_counts[char] += 1
-                if char in {"ʰ", "ʲ", "ʷ", "ː", "ˑ", "ˀ", "ˁ", "ˤ", "ʼ"}:
+                if char in IPA_MODIFIER_CHARS:
                     ipa_modifier_counts[char] += 1
 
             for idx, char in enumerate(text):
@@ -611,6 +768,20 @@ def analyze_sources(
                     text=text,
                     start=idx,
                     end=idx + 1,
+                    context_chars=context_chars,
+                    limit=example_limit,
+                )
+
+            for modifier, base, sequence, start, end in ipa_modifier_attachments(text):
+                attachment = (modifier, base, sequence)
+                ipa_modifier_attachment_counts[attachment] += 1
+                add_example(
+                    modifier_attachment_examples,
+                    attachment,
+                    source=source,
+                    text=text,
+                    start=start,
+                    end=end,
                     context_chars=context_chars,
                     limit=example_limit,
                 )
@@ -644,11 +815,49 @@ def analyze_sources(
                     limit=example_limit,
                 )
 
-            for start, end, mark in diacritic_hits(text, diacritic_markers):
+            configured_hits = diacritic_hits(text, diacritic_markers)
+            for start, end, mark in configured_hits:
                 configured_diacritic_counts[mark] += 1
                 add_example(
                     marker_examples,
                     f"diacritic:{mark}",
+                    source=source,
+                    text=text,
+                    start=start,
+                    end=end,
+                    context_chars=context_chars,
+                    limit=example_limit,
+                )
+
+            for mark, base, sequence, start, end in diacritic_attachments(
+                text, configured_hits
+            ):
+                attachment = (mark, base, sequence)
+                configured_diacritic_attachment_counts[attachment] += 1
+                add_example(
+                    configured_diacritic_attachment_examples,
+                    attachment,
+                    source=source,
+                    text=text,
+                    start=start,
+                    end=end,
+                    context_chars=context_chars,
+                    limit=example_limit,
+                )
+
+            combining_hits = [
+                (index, index + 1, char)
+                for index, char in enumerate(text)
+                if unicodedata.category(char) == "Mn"
+            ]
+            for mark, base, sequence, start, end in diacritic_attachments(
+                text, combining_hits
+            ):
+                attachment = (mark, base, sequence)
+                combining_diacritic_attachment_counts[attachment] += 1
+                add_example(
+                    combining_diacritic_attachment_examples,
+                    attachment,
                     source=source,
                     text=text,
                     start=start,
@@ -707,13 +916,19 @@ def analyze_sources(
         "chao_letter_counts": chao_letter_counts,
         "combining_counts": combining_counts,
         "configured_diacritic_counts": configured_diacritic_counts,
+        "combining_diacritic_attachment_counts": combining_diacritic_attachment_counts,
+        "configured_diacritic_attachment_counts": configured_diacritic_attachment_counts,
         "ipa_modifier_counts": ipa_modifier_counts,
+        "ipa_modifier_attachment_counts": ipa_modifier_attachment_counts,
         "reduplicated_char_counts": reduplicated_char_counts,
         "reduplicated_digit_counts": reduplicated_digit_counts,
         "per_file_rows": per_file_rows,
         "source_type_counts": source_type_counts,
         "char_examples": char_examples,
         "marker_examples": marker_examples,
+        "modifier_attachment_examples": modifier_attachment_examples,
+        "combining_diacritic_attachment_examples": combining_diacritic_attachment_examples,
+        "configured_diacritic_attachment_examples": configured_diacritic_attachment_examples,
         "total_annotations": total_annotations,
         "total_nonempty_chars": total_nonempty_chars,
     }
@@ -731,8 +946,8 @@ def table_for_counter(counter: Counter[str], *, limit: int | None = None) -> lis
 
 
 def examples_for_key(
-    examples: dict[str, list[dict[str, Any]]],
-    key: str,
+    examples: dict[Any, list[dict[str, Any]]],
+    key: Any,
     *,
     data_roots: list[Path],
 ) -> str:
@@ -743,6 +958,66 @@ def examples_for_key(
             f"({display_file_path(example['file'], data_roots)})"
         )
     return "<br>".join(rows) if rows else "-"
+
+
+def _attachment_value_display(value: str) -> str:
+    if value == UNATTACHED_MODIFIER:
+        return value
+    return char_display(value) if len(value) == 1 else f"`{markdown_escape_cell(value)}`"
+
+
+def attachment_table(
+    counter: Counter[tuple[str, str, str]],
+    examples: dict[tuple[str, str, str], list[dict[str, Any]]],
+    *,
+    data_roots: list[Path],
+    first_column: str,
+    empty_message: str,
+) -> list[str]:
+    if not counter:
+        return [empty_message]
+    rows = [f"| {first_column} | Modified grapheme | Sequence | Count | Examples |"]
+    rows.append("| --- | --- | --- | ---: | --- |")
+    for attachment, count in sorted(
+        counter.items(), key=lambda item: (-item[1], *item[0])
+    ):
+        modifier, base, sequence = attachment
+        rows.append(
+            f"| {char_display(modifier)} | {_attachment_value_display(base)} | "
+            f"{_attachment_value_display(sequence)} | {count:,} | "
+            f"{examples_for_key(examples, attachment, data_roots=data_roots)} |"
+        )
+    return rows
+
+
+def ipa_modifier_attachment_table(
+    counter: Counter[tuple[str, str, str]],
+    examples: dict[tuple[str, str, str], list[dict[str, Any]]],
+    *,
+    data_roots: list[Path],
+) -> list[str]:
+    return attachment_table(
+        counter,
+        examples,
+        data_roots=data_roots,
+        first_column="Modifier",
+        empty_message="No IPA modifier attachments found.",
+    )
+
+
+def diacritic_attachment_table(
+    counter: Counter[tuple[str, str, str]],
+    examples: dict[tuple[str, str, str], list[dict[str, Any]]],
+    *,
+    data_roots: list[Path],
+) -> list[str]:
+    return attachment_table(
+        counter,
+        examples,
+        data_roots=data_roots,
+        first_column="Diacritic",
+        empty_message="No diacritic attachments found.",
+    )
 
 
 def table_for_counter_with_examples(
@@ -973,6 +1248,15 @@ def build_report(config: dict[str, Any], config_path: Path) -> tuple[str, Path]:
         )
     )
 
+    lines.extend(["", "## IPA Modifier Attachments", ""])
+    lines.extend(
+        ipa_modifier_attachment_table(
+            analysis["ipa_modifier_attachment_counts"],
+            analysis["modifier_attachment_examples"],
+            data_roots=data_roots,
+        )
+    )
+
     lines.extend(["", "## Configured Diacritic Markers", ""])
     lines.extend(
         table_for_counter_with_examples(
@@ -983,11 +1267,29 @@ def build_report(config: dict[str, Any], config_path: Path) -> tuple[str, Path]:
         )
     )
 
+    lines.extend(["", "## Configured Diacritic Attachments", ""])
+    lines.extend(
+        diacritic_attachment_table(
+            analysis["configured_diacritic_attachment_counts"],
+            analysis["configured_diacritic_attachment_examples"],
+            data_roots=data_roots,
+        )
+    )
+
     lines.extend(["", "## Combining Diacritic Characters", ""])
     lines.extend(
         table_for_counter_with_examples(
             analysis["combining_counts"],
             char_examples,
+            data_roots=data_roots,
+        )
+    )
+
+    lines.extend(["", "## Combining Diacritic Attachments", ""])
+    lines.extend(
+        diacritic_attachment_table(
+            analysis["combining_diacritic_attachment_counts"],
+            analysis["combining_diacritic_attachment_examples"],
             data_roots=data_roots,
         )
     )
