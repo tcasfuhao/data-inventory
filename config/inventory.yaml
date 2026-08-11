@@ -1,4 +1,4 @@
-language: yongning-na
+language: yongning-na_03
 #title: Yongning-na Transcription Character Inventory
 data_roots:
   - ~/projects/my-projects/asr-models/language-downloads/yongning-na_01/doreco_yong1270_core_v2.0/
@@ -14,6 +14,10 @@ textgrid_tier: segments
 eaf_tier: W-0
 example_limit: 3
 context_chars: 24
+
+
+# Chao numbers may contain any number of levels. Chao letter contours are
+# discovered as maximal runs made from the five primitive letters below.
 chao_number_regex: "[1-5]{1,}"
 chao_letters:
   - "˥"
@@ -21,11 +25,6 @@ chao_letters:
   - "˧"
   - "˨"
   - "˩"
-  - "꜒"
-  - "꜓"
-  - "꜔"
-  - "꜕"
-  - "꜖"
 diacritic_markers:
   - "◌̀"
   - "◌́"
