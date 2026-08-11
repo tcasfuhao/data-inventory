@@ -22,7 +22,7 @@ DEFAULT_CONFIG = Path("config/inventory.yaml")
 QUOTE_CHARS = set("\"'`´‘’‚‛“”„‟«»‹›")
 PUNCTUATION_TO_REPORT = set(",.;:!?¿¡#()[]{}<>/\\|-_+=*&^%$@~")
 TONE_NUMBER_RE = re.compile(r"(?<!\d)([1-5]{2})(?!\d)")
-DEFAULT_CHAO_LETTERS = ["˥", "˦", "˧", "˨", "˩", "꜒", "꜓", "꜔", "꜕", "꜖"]
+DEFAULT_CHAO_LETTERS = ["˥", "˦", "˧", "˨", "˩"]
 DEFAULT_DIACRITIC_MARKERS = ["◌̀", "◌́", "◌̂", "◌̃", "◌̄", "◌̆", "◌̈", "◌̊", "◌̌", "◌̩", "◌̯"]
 REDUPLICATED_CHAR_RE = re.compile(r"(.)\1+")
 REDUPLICATED_DIGIT_RE = re.compile(r"(\d)\1+")
@@ -495,10 +495,13 @@ def markdown_escape_cell(value: str) -> str:
 
 
 def compile_chao_letters_regex(chao_letters: list[str]) -> re.Pattern:
-    escaped = [re.escape(letter) for letter in chao_letters if letter]
-    if not escaped:
-        return re.compile(r"$a")
-    return re.compile("|".join(sorted(escaped, key=len, reverse=True)))
+    if not chao_letters:
+        raise ValueError("chao_letters must contain at least one primitive letter")
+    if any(len(letter) != 1 for letter in chao_letters):
+        raise ValueError("Each chao_letters entry must be one non-empty character")
+    if len(chao_letters) != len(set(chao_letters)):
+        raise ValueError("chao_letters contains duplicate primitive letters")
+    return re.compile(f"[{''.join(re.escape(letter) for letter in chao_letters)}]+")
 
 
 def diacritic_hits(text: str, markers: list[str]) -> list[tuple[int, int, str]]:
@@ -915,7 +918,7 @@ def build_report(config: dict[str, Any], config_path: Path) -> tuple[str, Path]:
     lines.extend(["", "## Chao Tone Number Sequences", ""])
     lines.extend(tone_table_with_examples(analysis["tone_counts"], marker_examples, data_roots=data_roots))
 
-    lines.extend(["", "## Chao Tone Letters", ""])
+    lines.extend(["", "## Chao Tone Letter Contours", ""])
     lines.extend(
         table_for_counter_with_examples(
             analysis["chao_letter_counts"],
