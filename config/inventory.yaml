@@ -1,4 +1,4 @@
-language: yongning-na_03
+language: yongning-na_04
 #title: Yongning-na Transcription Character Inventory
 data_roots:
   - ~/projects/my-projects/asr-models/language-downloads/yongning-na_01/doreco_yong1270_core_v2.0/
