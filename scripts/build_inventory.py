@@ -524,6 +524,30 @@ def diacritic_hits(text: str, markers: list[str]) -> list[tuple[int, int, str]]:
     return hits
 
 
+def diacritic_occurrences(
+    text: str, markers: list[str]
+) -> list[tuple[int, int, str, str]]:
+    """Merge configured and discovered diacritics without duplicate occurrences."""
+    configured_marks = {normalize_diacritic_marker(marker) for marker in markers}
+    configured_marks.discard("")
+    hits = diacritic_hits(text, markers)
+    seen = set(hits)
+    for index, char in enumerate(text):
+        hit = (index, index + 1, char)
+        if unicodedata.category(char) == "Mn" and hit not in seen:
+            hits.append(hit)
+            seen.add(hit)
+    return [
+        (
+            start,
+            end,
+            mark,
+            "Configured" if mark in configured_marks else "Discovered",
+        )
+        for start, end, mark in sorted(hits)
+    ]
+
+
 def char_name(char: str) -> str:
     if char == " ":
         return "SPACE"
@@ -706,10 +730,9 @@ def analyze_sources(
     digit_counts: Counter[str] = Counter()
     tone_counts: Counter[str] = Counter()
     chao_letter_counts: Counter[str] = Counter()
-    combining_counts: Counter[str] = Counter()
-    configured_diacritic_counts: Counter[str] = Counter()
-    combining_diacritic_attachment_counts: Counter[tuple[str, str, str]] = Counter()
-    configured_diacritic_attachment_counts: Counter[tuple[str, str, str]] = Counter()
+    diacritic_counts: Counter[str] = Counter()
+    diacritic_detection: dict[str, str] = {}
+    diacritic_attachment_counts: Counter[tuple[str, str, str]] = Counter()
     ipa_modifier_counts: Counter[str] = Counter()
     ipa_modifier_attachment_counts: Counter[tuple[str, str, str]] = Counter()
     reduplicated_char_counts: Counter[str] = Counter()
@@ -721,10 +744,7 @@ def analyze_sources(
     modifier_attachment_examples: dict[
         tuple[str, str, str], list[dict[str, Any]]
     ] = {}
-    combining_diacritic_attachment_examples: dict[
-        tuple[str, str, str], list[dict[str, Any]]
-    ] = {}
-    configured_diacritic_attachment_examples: dict[
+    diacritic_attachment_examples: dict[
         tuple[str, str, str], list[dict[str, Any]]
     ] = {}
 
@@ -755,8 +775,6 @@ def analyze_sources(
                     digit_counts[char] += 1
                 if is_punctuation(char):
                     punctuation_counts[char] += 1
-                if unicodedata.category(char) == "Mn":
-                    combining_counts[char] += 1
                 if char in IPA_MODIFIER_CHARS:
                     ipa_modifier_counts[char] += 1
 
@@ -815,9 +833,10 @@ def analyze_sources(
                     limit=example_limit,
                 )
 
-            configured_hits = diacritic_hits(text, diacritic_markers)
-            for start, end, mark in configured_hits:
-                configured_diacritic_counts[mark] += 1
+            occurrences = diacritic_occurrences(text, diacritic_markers)
+            for start, end, mark, detection in occurrences:
+                diacritic_counts[mark] += 1
+                diacritic_detection[mark] = detection
                 add_example(
                     marker_examples,
                     f"diacritic:{mark}",
@@ -829,34 +848,16 @@ def analyze_sources(
                     limit=example_limit,
                 )
 
-            for mark, base, sequence, start, end in diacritic_attachments(
-                text, configured_hits
-            ):
-                attachment = (mark, base, sequence)
-                configured_diacritic_attachment_counts[attachment] += 1
-                add_example(
-                    configured_diacritic_attachment_examples,
-                    attachment,
-                    source=source,
-                    text=text,
-                    start=start,
-                    end=end,
-                    context_chars=context_chars,
-                    limit=example_limit,
-                )
-
-            combining_hits = [
-                (index, index + 1, char)
-                for index, char in enumerate(text)
-                if unicodedata.category(char) == "Mn"
+            occurrence_hits = [
+                (start, end, mark) for start, end, mark, _ in occurrences
             ]
             for mark, base, sequence, start, end in diacritic_attachments(
-                text, combining_hits
+                text, occurrence_hits
             ):
                 attachment = (mark, base, sequence)
-                combining_diacritic_attachment_counts[attachment] += 1
+                diacritic_attachment_counts[attachment] += 1
                 add_example(
-                    combining_diacritic_attachment_examples,
+                    diacritic_attachment_examples,
                     attachment,
                     source=source,
                     text=text,
@@ -914,10 +915,9 @@ def analyze_sources(
         "digit_counts": digit_counts,
         "tone_counts": tone_counts,
         "chao_letter_counts": chao_letter_counts,
-        "combining_counts": combining_counts,
-        "configured_diacritic_counts": configured_diacritic_counts,
-        "combining_diacritic_attachment_counts": combining_diacritic_attachment_counts,
-        "configured_diacritic_attachment_counts": configured_diacritic_attachment_counts,
+        "diacritic_counts": diacritic_counts,
+        "diacritic_detection": diacritic_detection,
+        "diacritic_attachment_counts": diacritic_attachment_counts,
         "ipa_modifier_counts": ipa_modifier_counts,
         "ipa_modifier_attachment_counts": ipa_modifier_attachment_counts,
         "reduplicated_char_counts": reduplicated_char_counts,
@@ -927,8 +927,7 @@ def analyze_sources(
         "char_examples": char_examples,
         "marker_examples": marker_examples,
         "modifier_attachment_examples": modifier_attachment_examples,
-        "combining_diacritic_attachment_examples": combining_diacritic_attachment_examples,
-        "configured_diacritic_attachment_examples": configured_diacritic_attachment_examples,
+        "diacritic_attachment_examples": diacritic_attachment_examples,
         "total_annotations": total_annotations,
         "total_nonempty_chars": total_nonempty_chars,
     }
@@ -1008,16 +1007,52 @@ def ipa_modifier_attachment_table(
 def diacritic_attachment_table(
     counter: Counter[tuple[str, str, str]],
     examples: dict[tuple[str, str, str], list[dict[str, Any]]],
+    detection: dict[str, str],
     *,
     data_roots: list[Path],
 ) -> list[str]:
-    return attachment_table(
-        counter,
-        examples,
-        data_roots=data_roots,
-        first_column="Diacritic",
-        empty_message="No diacritic attachments found.",
-    )
+    if not counter:
+        return ["No diacritic attachments found."]
+    rows = [
+        "| Diacritic (Symbol) | Diacritic (Orthography) | Modified grapheme | "
+        "Sequence | Detection | Count | Examples |"
+    ]
+    rows.append("| --- | --- | --- | --- | --- | ---: | --- |")
+    for attachment, count in sorted(
+        counter.items(), key=lambda item: (-item[1], *item[0])
+    ):
+        mark, base, sequence = attachment
+        rows.append(
+            f"| {char_display(mark)} | {char_name(mark)} | "
+            f"{_attachment_value_display(base)} | "
+            f"{_attachment_value_display(sequence)} | {detection[mark]} | "
+            f"{count:,} | "
+            f"{examples_for_key(examples, attachment, data_roots=data_roots)} |"
+        )
+    return rows
+
+
+def diacritic_marker_table(
+    counter: Counter[str],
+    examples: dict[str, list[dict[str, Any]]],
+    detection: dict[str, str],
+    *,
+    data_roots: list[Path],
+) -> list[str]:
+    if not counter:
+        return ["No diacritics found."]
+    rows = [
+        "| Diacritic (Symbol) | Diacritic (Orthography) | Detection | Count | "
+        "Examples |"
+    ]
+    rows.append("| --- | --- | --- | ---: | --- |")
+    for mark, count in counter.most_common():
+        rows.append(
+            f"| {char_display(mark)} | {char_name(mark)} | {detection[mark]} | "
+            f"{count:,} | "
+            f"{examples_for_key(examples, f'diacritic:{mark}', data_roots=data_roots)} |"
+        )
+    return rows
 
 
 def table_for_counter_with_examples(
@@ -1257,39 +1292,22 @@ def build_report(config: dict[str, Any], config_path: Path) -> tuple[str, Path]:
         )
     )
 
-    lines.extend(["", "## Configured Diacritic Markers", ""])
+    lines.extend(["", "## Diacritic Markers", ""])
     lines.extend(
-        table_for_counter_with_examples(
-            analysis["configured_diacritic_counts"],
+        diacritic_marker_table(
+            analysis["diacritic_counts"],
             marker_examples,
+            analysis["diacritic_detection"],
             data_roots=data_roots,
-            key_prefix="diacritic:",
         )
     )
 
-    lines.extend(["", "## Configured Diacritic Attachments", ""])
+    lines.extend(["", "## Diacritic Attachments", ""])
     lines.extend(
         diacritic_attachment_table(
-            analysis["configured_diacritic_attachment_counts"],
-            analysis["configured_diacritic_attachment_examples"],
-            data_roots=data_roots,
-        )
-    )
-
-    lines.extend(["", "## Combining Diacritic Characters", ""])
-    lines.extend(
-        table_for_counter_with_examples(
-            analysis["combining_counts"],
-            char_examples,
-            data_roots=data_roots,
-        )
-    )
-
-    lines.extend(["", "## Combining Diacritic Attachments", ""])
-    lines.extend(
-        diacritic_attachment_table(
-            analysis["combining_diacritic_attachment_counts"],
-            analysis["combining_diacritic_attachment_examples"],
+            analysis["diacritic_attachment_counts"],
+            analysis["diacritic_attachment_examples"],
+            analysis["diacritic_detection"],
             data_roots=data_roots,
         )
     )
