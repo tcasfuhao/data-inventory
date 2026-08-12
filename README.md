@@ -71,9 +71,11 @@ This is a Unicode- and context-based inventory aid, not a complete phonological 
 
 ### Diacritic attachments
 
-The report provides two separate breakdowns of what diacritics modify. **Configured Diacritic Attachments** covers the marks in `diacritic_markers` and recognizes both decomposed forms such as `á` and precomposed forms such as `á`; the latter is shown with modified base `a` and exact source sequence `á`. **Combining Diacritic Attachments** covers every nonspacing combining-mark code point physically present in the source, without synthesizing marks from precomposed characters.
+The report has one **Diacritic Markers** table showing which marks occur and one **Diacritic Attachments** table showing what they modify. Marks listed in `diacritic_markers` are labelled `Configured`; other Unicode nonspacing combining marks found in the data are labelled `Discovered`. Occurrences found by both methods are counted only once.
 
-Stacked marks refer to their shared base. Common IPA tie bars retain the complete tied unit, so the tie bar in `d͡ʒ` is reported against `d͡ʒ`, and a mark in `d͡ʒ̥` is likewise reported as modifying `d͡ʒ`. Marks without a usable base are labelled `(unattached)`. Both breakdowns preserve the existing overall count tables and use Unicode context inference rather than full phonological parsing.
+Configured marks are recognized in decomposed forms such as `á` and precomposed forms such as `á`; the latter is shown with modified base `a` with the added diacritic whilst the former is the exact source sequence `á`. Each table includes the official Unicode name of the mark. Stacked marks refer to their shared base, so the marks in `ṽ̩` receive separate rows with the same source sequence. Common IPA tie bars retain the complete tied unit: the tie bar in `d͡ʒ` is reported against `d͡ʒ`, and a mark in `d͡ʒ̥` is likewise reported as modifying `d͡ʒ`. Marks without a usable base are labelled `(unattached)`.
+
+This reporting uses Unicode context inference rather than full phonological parsing.
 
 ## Run
 
